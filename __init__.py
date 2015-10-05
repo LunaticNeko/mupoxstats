@@ -1,3 +1,6 @@
+
+# Minimalistic Utility for POX Statistics
+
 from pox.core import core
 from pox.lib.revent import *
 import pox.openflow.libopenflow_01 as of
@@ -19,10 +22,8 @@ import sqlalchemy.pool
 
 log = core.getLogger()
 
-ping_timer = 2
-
 class Stats(EventMixin):
-    _core_name = "stats"
+    _core_name = "mupoxstat"
 
     G = nx.DiGraph()
 
@@ -103,8 +104,14 @@ class Stats(EventMixin):
     live_data = dict()
     diff_data = dict()
 
-    def __init__(self):
+    def __init__(self, interval=10, threshold = 10000):
+        '''
+            interval = time between pings (seconds)
+            threshold = minimum amount of port activity to print the stats (bytes)
+        '''
         core.listen_to_dependencies(self)
+        self.interval = interval
+        self.threshold = threshold
         G = nx.Graph()
         self._db_init()
         ping_thread = threading.Thread(target = self._start_ping_switches)
@@ -114,15 +121,13 @@ class Stats(EventMixin):
     def _start_ping_switches(self):
         while True:
             self._ping_switches()
-            sleep(10)
+            sleep(self.interval)
 
     def _ping_switches(self):
         log.info("Pinging Switches")
         nodes = self.G.nodes()
         for dpid in nodes:
             con = core.openflow.getConnection(dpid)
-            #log.info("Pinging %x" % (dpid))
-            #log.info((con, con.connect_time))
             msg = of.ofp_stats_request()
             msg.body = of.ofp_port_stats_request()
             if con is not None and con.connect_time is not None:
@@ -147,20 +152,10 @@ class Stats(EventMixin):
         log.info(event)
 
     def _handle_openflow_PortStatsReceived(self, event):
-        log.info(event)
-        log.info((dpid_to_str(event.dpid), str(datetime.datetime.now())))
+        log.info("%s @ %s" % (dpid_to_str(event.dpid), str(datetime.datetime.now())))
         unixtime = int(time.mktime(datetime.datetime.now().timetuple()))
         if len(event.stats)>0:
             for stat in event.stats:
-                log.info("  %d: RX %d B/%d E/%d D; TX %d B/%d E/%d D",
-                        stat.port_no,
-                        stat.rx_bytes,
-                        stat.rx_errors,
-                        stat.rx_dropped,
-                        stat.tx_bytes,
-                        stat.tx_errors,
-                        stat.tx_dropped
-                        )
                 self._db_record(
                         event.dpid, stat.port_no, unixtime,
                         stat.rx_bytes, stat.rx_errors, stat.rx_dropped,
@@ -173,13 +168,26 @@ class Stats(EventMixin):
                 new_stat = stat_row[0][2:9]
                 old_stat = stat_row[0][9:16]
                 diff = [new_stat[i]-old_stat[i] for i in range(0,7)]
-                log.info("   d: RX %d B/%d E/%d D; TX %d B/%d E/%d D",
-                        diff[1],diff[2],diff[3],diff[4],diff[5],diff[6])
+                if sum(diff[1:]) > self.threshold:
+                    '''
+                    log.info("  %d: RX %d B/%d E/%d D; TX %d B/%d E/%d D",
+                            stat.port_no,
+                            stat.rx_bytes,
+                            stat.rx_errors,
+                            stat.rx_dropped,
+                            stat.tx_bytes,
+                            stat.tx_errors,
+                            stat.tx_dropped
+                            )
+                    '''
+                    log.info("  %d: RX %d B/%d E/%d D; TX %d B/%d E/%d D",
+                            stat.port_no, diff[1],diff[2],diff[3],diff[4],diff[5],diff[6])
 
 
 
     def _handle_openflow_PacketIn(self, event):
-        log.info(event)
+        #log.info(event)
+        pass
 
     def _handle_openflow_discovery_LinkEvent(self, event):
         dpid1 = event.link.dpid1
